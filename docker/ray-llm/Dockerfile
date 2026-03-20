@@ -47,6 +47,8 @@ grep -v '^vllm ' "${LOCK_FILE}" | uv pip install --system --no-cache-dir --no-de
 # above, which is much faster than downloading it again in an isolated env.
 VLLM_URL="$(grep '^vllm @ ' "${LOCK_FILE}" | sed 's/^vllm @ //')"
 if [ -n "${VLLM_URL}" ]; then
+    # setuptools_scm is needed as a build dependency for vllm when using --no-build-isolation
+    uv pip install --system --no-cache-dir setuptools_scm
     uv pip install --system --no-cache-dir --no-deps --no-build-isolation "${VLLM_URL}"
 fi
 

@@ -23,9 +23,10 @@ LOCK_FILE="python/deplocks/llm/rayllm_test_${PYTHON_CODE}_${RAY_CUDA_CODE}.lock"
 
 # Install everything from the lock file except vllm (git deps can't be hashed
 # and building from source is slow). Then install vllm separately.
-grep -v '^vllm ' "${LOCK_FILE}" | pip install --no-deps --no-verify-hashes -r /dev/stdin
+grep -v '^vllm ' "${LOCK_FILE}" | pip install --no-deps -r /dev/stdin
 VLLM_URL="$(grep '^vllm @ ' "${LOCK_FILE}" | sed 's/^vllm @ //')"
 if [ -n "${VLLM_URL}" ]; then
+    pip install setuptools_scm
     pip install --no-deps --no-build-isolation "${VLLM_URL}"
 fi
 
