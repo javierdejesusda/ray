@@ -23,6 +23,12 @@ build_arg_sets:
     - --unsafe-package ray
     - --python-platform=x86_64-manylinux_2_31
     - --index https://download.pytorch.org/whl/${CUDA_CODE}
+    # Skip building vllm from source during dependency resolution.
+    # vllm is pinned via a git URL whose build-system.requires includes torch,
+    # which may not be available on every index (e.g. CPU-only).  Using
+    # --only-binary lets uv resolve vllm's metadata from the git repo without
+    # invoking the build backend.
+    - --only-binary vllm
   build_arg_sets:
     - cpu
     - cu128

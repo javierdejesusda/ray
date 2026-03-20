@@ -30,14 +30,25 @@ else
     exit 1
 fi
 
+LOCK_FILE="rayllm_${PYTHON_CODE}_${CUDA_CODE}.lock"
+
+# Install everything from the lock file except vllm first.
 # Hash verification is disabled because uv pip compile generates hashes from
 # PyPI, but unsafe-best-match may download from the CUDA index which serves
 # different builds of some packages (e.g. triton). The lock file still pins
 # exact versions, so integrity is maintained through version pinning.
-uv pip install --system --no-cache-dir --no-deps \
+grep -v '^vllm ' "${LOCK_FILE}" | uv pip install --system --no-cache-dir --no-deps \
     --index-strategy unsafe-best-match \
     --no-verify-hashes \
-    -r "rayllm_${PYTHON_CODE}_${CUDA_CODE}.lock"
+    -r /dev/stdin
+
+# Install vllm separately. Git VCS deps cannot be hashed and are built from
+# source.  --no-build-isolation lets the build reuse torch already installed
+# above, which is much faster than downloading it again in an isolated env.
+VLLM_URL="$(grep '^vllm @ ' "${LOCK_FILE}" | sed 's/^vllm @ //')"
+if [ -n "${VLLM_URL}" ]; then
+    uv pip install --system --no-cache-dir --no-deps --no-build-isolation "${VLLM_URL}"
+fi
 
 # Export installed packages
 $HOME/anaconda3/bin/pip freeze > /home/ray/pip-freeze.txt
