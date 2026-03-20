@@ -20,13 +20,17 @@ SKIP_PYTHON_PACKAGES=1 ./ci/env/install-dependencies.sh
 PYTHON_CODE="$(python -c "import sys; v=sys.version_info; print(f'py{v.major}{v.minor}')")"
 pip install --no-deps -r python/deplocks/llm/rayllm_test_${PYTHON_CODE}_${RAY_CUDA_CODE}.lock
 
-# Overlay Python-only changes from the vLLM RayExecutorV2 PR
+# Overlay only the files changed by the vLLM RayExecutorV2 PR
 # (https://github.com/vllm-project/vllm/pull/36836) on top of the installed
-# vllm 0.17.0 wheel. We clone and copy rather than pip-installing from the git
-# URL because vllm's build backend tries to compile C/CUDA extensions.
+# vllm 0.17.0 wheel. We copy individual files rather than the whole tree to
+# avoid overwriting compiled C extensions with incompatible Python code.
 VLLM_SITE="$(python -c 'import vllm, os; print(os.path.dirname(vllm.__file__))')"
 git clone --depth 1 -b ray https://github.com/jeffreywang-anyscale/vllm.git /tmp/vllm-overlay
-cp -r /tmp/vllm-overlay/vllm/* "${VLLM_SITE}/"
+cp /tmp/vllm-overlay/vllm/envs.py "${VLLM_SITE}/envs.py"
+cp /tmp/vllm-overlay/vllm/v1/executor/abstract.py "${VLLM_SITE}/v1/executor/abstract.py"
+cp /tmp/vllm-overlay/vllm/v1/executor/ray_executor_v2.py "${VLLM_SITE}/v1/executor/ray_executor_v2.py"
+cp /tmp/vllm-overlay/vllm/v1/executor/ray_utils.py "${VLLM_SITE}/v1/executor/ray_utils.py"
+cp /tmp/vllm-overlay/vllm/v1/worker/worker_base.py "${VLLM_SITE}/v1/worker/worker_base.py"
 rm -rf /tmp/vllm-overlay
 
 EOF
