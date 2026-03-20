@@ -30,27 +30,39 @@ else
     exit 1
 fi
 
-LOCK_FILE="rayllm_${PYTHON_CODE}_${CUDA_CODE}.lock"
-
-# Install everything from the lock file except vllm first.
 # Hash verification is disabled because uv pip compile generates hashes from
 # PyPI, but unsafe-best-match may download from the CUDA index which serves
 # different builds of some packages (e.g. triton). The lock file still pins
 # exact versions, so integrity is maintained through version pinning.
-grep -v '^vllm ' "${LOCK_FILE}" | uv pip install --system --no-cache-dir --no-deps \
+uv pip install --system --no-cache-dir --no-deps \
     --index-strategy unsafe-best-match \
     --no-verify-hashes \
-    -r /dev/stdin
+    -r "rayllm_${PYTHON_CODE}_${CUDA_CODE}.lock"
 
-# Install vllm separately. Git VCS deps cannot be hashed and are built from
-# source.  --no-build-isolation lets the build reuse torch already installed
-# above, which is much faster than downloading it again in an isolated env.
-VLLM_URL="$(grep '^vllm @ ' "${LOCK_FILE}" | sed 's/^vllm @ //')"
-if [ -n "${VLLM_URL}" ]; then
-    # setuptools_scm is needed as a build dependency for vllm when using --no-build-isolation
-    uv pip install --system --no-cache-dir setuptools_scm
-    uv pip install --system --no-cache-dir --no-deps --no-build-isolation "${VLLM_URL}"
-fi
+# Overlay only the files changed by the vLLM RayExecutorV2 PR
+# (https://github.com/vllm-project/vllm/pull/36836) on top of the installed
+# vllm 0.17.0 wheel. We copy individual files rather than the whole tree to
+# avoid overwriting compiled C extensions with incompatible Python code.
+VLLM_SITE="$(python -c 'import vllm, os; print(os.path.dirname(vllm.__file__))')"
+git clone --depth 1 -b ray https://github.com/jeffreywang-anyscale/vllm.git /tmp/vllm-overlay
+cp /tmp/vllm-overlay/vllm/v1/executor/abstract.py "${VLLM_SITE}/v1/executor/abstract.py"
+cp /tmp/vllm-overlay/vllm/v1/executor/ray_executor_v2.py "${VLLM_SITE}/v1/executor/ray_executor_v2.py"
+cp /tmp/vllm-overlay/vllm/v1/executor/ray_utils.py "${VLLM_SITE}/v1/executor/ray_utils.py"
+cp /tmp/vllm-overlay/vllm/v1/worker/worker_base.py "${VLLM_SITE}/v1/worker/worker_base.py"
+rm -rf /tmp/vllm-overlay
+
+# Patch VLLM_USE_RAY_V2_EXECUTOR_BACKEND into the existing v0.17.0 envs.py.
+# Append to the end of the file to avoid fragile regex matching.
+python -c "
+import pathlib
+p = pathlib.Path('${VLLM_SITE}/envs.py')
+p.write_text(p.read_text() + '''
+
+# Patched: add VLLM_USE_RAY_V2_EXECUTOR_BACKEND support
+import os as _os
+environment_variables[\"VLLM_USE_RAY_V2_EXECUTOR_BACKEND\"] = lambda: bool(int(_os.getenv(\"VLLM_USE_RAY_V2_EXECUTOR_BACKEND\", \"0\")))
+''')
+"
 
 # Export installed packages
 $HOME/anaconda3/bin/pip freeze > /home/ray/pip-freeze.txt
@@ -82,3 +94,4 @@ EOF
 # vLLM 0.17.0 eagerly imports xgrammar -> ICU 78 -> CXXABI_1.3.15.
 # System libstdc++ only has 1.3.13; prepend conda's newer copy.
 ENV LD_LIBRARY_PATH=/home/ray/anaconda3/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
+ENV VLLM_USE_RAY_V2_EXECUTOR_BACKEND=1
