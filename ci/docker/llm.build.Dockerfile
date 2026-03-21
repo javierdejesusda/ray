@@ -33,23 +33,17 @@ cp /tmp/vllm-overlay/vllm/v1/executor/ray_utils.py "${VLLM_SITE}/v1/executor/ray
 cp /tmp/vllm-overlay/vllm/v1/worker/worker_base.py "${VLLM_SITE}/v1/worker/worker_base.py"
 rm -rf /tmp/vllm-overlay
 
-# Patch VLLM_USE_RAY_V2_EXECUTOR_BACKEND into the existing v0.17.0 envs.py
-# instead of replacing the whole file (the PR branch is based on main and
-# is missing env vars that v0.17.0 code depends on).
+# Patch VLLM_USE_RAY_V2_EXECUTOR_BACKEND into the existing v0.17.0 envs.py.
+# Append to the end of the file to avoid fragile regex matching.
 python -c "
-p = __import__('pathlib').Path('${VLLM_SITE}/envs.py')
-src = p.read_text()
-src = src.replace(
-    'VLLM_USE_RAY_WRAPPED_PP_COMM: bool = False',
-    'VLLM_USE_RAY_WRAPPED_PP_COMM: bool = False\n    VLLM_USE_RAY_V2_EXECUTOR_BACKEND: bool = False',
-)
-import re
-src = re.sub(
-    r'(\"VLLM_USE_RAY_WRAPPED_PP_COMM\":\s*lambda.*?,)',
-    r'''\1\n    \"VLLM_USE_RAY_V2_EXECUTOR_BACKEND\": lambda: bool(int(__import__(\"os\").getenv(\"VLLM_USE_RAY_V2_EXECUTOR_BACKEND\", \"0\"))),''',
-    src,
-)
-p.write_text(src)
+import pathlib
+p = pathlib.Path('${VLLM_SITE}/envs.py')
+p.write_text(p.read_text() + '''
+
+# Patched: add VLLM_USE_RAY_V2_EXECUTOR_BACKEND support
+import os as _os
+environment_variables[\"VLLM_USE_RAY_V2_EXECUTOR_BACKEND\"] = lambda: bool(int(_os.getenv(\"VLLM_USE_RAY_V2_EXECUTOR_BACKEND\", \"0\")))
+''')
 "
 
 EOF
