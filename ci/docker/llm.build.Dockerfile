@@ -26,12 +26,31 @@ pip install --no-deps -r python/deplocks/llm/rayllm_test_${PYTHON_CODE}_${RAY_CU
 # avoid overwriting compiled C extensions with incompatible Python code.
 VLLM_SITE="$(python -c 'import vllm, os; print(os.path.dirname(vllm.__file__))')"
 git clone --depth 1 -b ray https://github.com/jeffreywang-anyscale/vllm.git /tmp/vllm-overlay
-cp /tmp/vllm-overlay/vllm/envs.py "${VLLM_SITE}/envs.py"
+# Copy only the PR-changed files (not envs.py -- see below)
 cp /tmp/vllm-overlay/vllm/v1/executor/abstract.py "${VLLM_SITE}/v1/executor/abstract.py"
 cp /tmp/vllm-overlay/vllm/v1/executor/ray_executor_v2.py "${VLLM_SITE}/v1/executor/ray_executor_v2.py"
 cp /tmp/vllm-overlay/vllm/v1/executor/ray_utils.py "${VLLM_SITE}/v1/executor/ray_utils.py"
 cp /tmp/vllm-overlay/vllm/v1/worker/worker_base.py "${VLLM_SITE}/v1/worker/worker_base.py"
 rm -rf /tmp/vllm-overlay
+
+# Patch VLLM_USE_RAY_V2_EXECUTOR_BACKEND into the existing v0.17.0 envs.py
+# instead of replacing the whole file (the PR branch is based on main and
+# is missing env vars that v0.17.0 code depends on).
+python -c "
+p = __import__('pathlib').Path('${VLLM_SITE}/envs.py')
+src = p.read_text()
+src = src.replace(
+    'VLLM_USE_RAY_WRAPPED_PP_COMM: bool = False',
+    'VLLM_USE_RAY_WRAPPED_PP_COMM: bool = False\n    VLLM_USE_RAY_V2_EXECUTOR_BACKEND: bool = False',
+)
+import re
+src = re.sub(
+    r'(\"VLLM_USE_RAY_WRAPPED_PP_COMM\":\s*lambda.*?,)',
+    r'''\1\n    \"VLLM_USE_RAY_V2_EXECUTOR_BACKEND\": lambda: bool(int(__import__(\"os\").getenv(\"VLLM_USE_RAY_V2_EXECUTOR_BACKEND\", \"0\"))),''',
+    src,
+)
+p.write_text(src)
+"
 
 EOF
 
