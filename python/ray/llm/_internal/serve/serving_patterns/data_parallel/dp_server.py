@@ -21,7 +21,11 @@ from ray.serve.config import (
     GangSchedulingConfig,
 )
 from ray.util.collective.collective import get_address_and_port
-from ray.util.placement_group import get_placement_group
+from ray.util.placement_group import (
+    PlacementGroup,
+    get_placement_group,
+    placement_group_table,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +180,13 @@ class DPServer(LLMServer):
             self.dp_rank, bundles_per_replica, sorted_indices
         )
 
+        # Compute the within-node DP local rank so that vLLM workers under
+        # RayExecutorV2 can offset their CUDA device index correctly.
+        dp_local_rank = self._compute_dp_local_rank(
+            self.dp_rank, bundles_per_replica, sorted_indices, pg
+        )
+        os.environ["VLLM_DP_RANK_LOCAL"] = str(dp_local_rank)
+
         await super().__init__(llm_config)
 
     @staticmethod
@@ -201,6 +212,32 @@ class DPServer(LLMServer):
         return ",".join(
             str(sorted_indices[start + i]) for i in range(bundles_per_replica)
         )
+
+    @staticmethod
+    def _compute_dp_local_rank(
+        dp_rank: int,
+        bundles_per_replica: int,
+        sorted_indices: List[int],
+        pg: PlacementGroup,
+    ) -> int:
+        """Return the within-node DP local rank for this replica."""
+        table = placement_group_table(pg)
+        bundle_to_node = table["bundles_to_node_id"]
+
+        # Find the node of this replica's first bundle.
+        current_start = dp_rank * bundles_per_replica
+        current_first_bundle = sorted_indices[current_start]
+        current_node = bundle_to_node[current_first_bundle]
+
+        # Count how many earlier DP replicas have their first bundle on the
+        # same node.
+        local_rank = 0
+        for earlier_rank in range(dp_rank):
+            earlier_start = earlier_rank * bundles_per_replica
+            earlier_first_bundle = sorted_indices[earlier_start]
+            if bundle_to_node[earlier_first_bundle] == current_node:
+                local_rank += 1
+        return local_rank
 
     @classmethod
     def get_deployment_options(cls, llm_config: "LLMConfig"):
