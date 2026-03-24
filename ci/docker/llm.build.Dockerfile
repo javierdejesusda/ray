@@ -22,18 +22,21 @@ pip install --no-deps -r python/deplocks/llm/rayllm_test_${PYTHON_CODE}_${RAY_CU
 
 # Overlay only the files changed by the vLLM RayExecutorV2 PR
 # (https://github.com/vllm-project/vllm/pull/36836) on top of the installed
-# vllm 0.17.0 wheel. We copy individual files rather than the whole tree to
+# vllm 0.18.0 wheel. We copy individual files rather than the whole tree to
 # avoid overwriting compiled C extensions with incompatible Python code.
 VLLM_SITE="$(python -c 'import vllm, os; print(os.path.dirname(vllm.__file__))')"
 git clone --depth 1 -b ray https://github.com/jeffreywang-anyscale/vllm.git /tmp/vllm-overlay
-# Copy only the PR-changed files (not envs.py -- see below)
+# Copy only the PR-changed source files (not envs.py -- see below)
+cp /tmp/vllm-overlay/vllm/config/parallel.py "${VLLM_SITE}/config/parallel.py"
+cp /tmp/vllm-overlay/vllm/v1/engine/core.py "${VLLM_SITE}/v1/engine/core.py"
 cp /tmp/vllm-overlay/vllm/v1/executor/abstract.py "${VLLM_SITE}/v1/executor/abstract.py"
 cp /tmp/vllm-overlay/vllm/v1/executor/ray_executor_v2.py "${VLLM_SITE}/v1/executor/ray_executor_v2.py"
 cp /tmp/vllm-overlay/vllm/v1/executor/ray_utils.py "${VLLM_SITE}/v1/executor/ray_utils.py"
+cp /tmp/vllm-overlay/vllm/v1/worker/gpu_worker.py "${VLLM_SITE}/v1/worker/gpu_worker.py"
 cp /tmp/vllm-overlay/vllm/v1/worker/worker_base.py "${VLLM_SITE}/v1/worker/worker_base.py"
 rm -rf /tmp/vllm-overlay
 
-# Patch VLLM_USE_RAY_V2_EXECUTOR_BACKEND into the existing v0.17.0 envs.py.
+# Patch VLLM_USE_RAY_V2_EXECUTOR_BACKEND into the existing v0.18.0 envs.py.
 # Append to the end of the file to avoid fragile regex matching.
 python -c "
 import pathlib
