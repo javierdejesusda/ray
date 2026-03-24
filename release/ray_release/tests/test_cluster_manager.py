@@ -1,8 +1,9 @@
+import copy
 import sys
 import time
 import unittest
 from typing import Callable
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from freezegun import freeze_time
 
@@ -35,6 +36,21 @@ TEST_CLUSTER_COMPUTE = {
             "min_workers": 0,
             "max_workers": 0,
             "use_spot": False,
+        }
+    ],
+}
+
+
+TEST_CLUSTER_COMPUTE_NEW_SCHEMA = {
+    "cloud": "test_cloud",
+    "head_node": {
+        "instance_type": "m5.4xlarge",
+    },
+    "worker_nodes": [
+        {
+            "instance_type": "m5.xlarge",
+            "min_nodes": 0,
+            "max_nodes": 4,
         }
     ],
 }
@@ -301,6 +317,47 @@ class MinimalSessionManagerTest(unittest.TestCase):
             self.cluster_manager.cluster_compute["advanced_configurations_json"],
             target_cluster_compute["advanced_configurations_json"],
         )
+
+    def testClusterComputeExtraTagsNewSchema(self):
+        # Create a cluster manager with anyscale_sdk_2026=True
+        sdk = MockSDK()
+        sdk.returns["get_project"] = APIDict(result=APIDict(name="release_unit_tests"))
+        cluster_manager = MinimalClusterManager(
+            project_id=UNIT_TEST_PROJECT_ID,
+            sdk=sdk,
+            test=MockTest(
+                {
+                    "name": "unit_test_new_schema",
+                    "cluster": {"byod": {}, "anyscale_sdk_2026": True},
+                }
+            ),
+        )
+
+        cluster_compute = copy.deepcopy(TEST_CLUSTER_COMPUTE_NEW_SCHEMA)
+        cluster_manager.set_cluster_compute(cluster_compute, extra_tags={"foo": "bar"})
+
+        # Top-level advanced_instance_config should have tags
+        top_level_aic = cluster_manager.cluster_compute["advanced_instance_config"]
+        self.assertIn("TagSpecifications", top_level_aic)
+
+        # head_node.advanced_instance_config should have tags
+        head_aic = cluster_manager.cluster_compute["head_node"][
+            "advanced_instance_config"
+        ]
+        self.assertIn("TagSpecifications", head_aic)
+
+        # worker_nodes[0].advanced_instance_config should have tags
+        worker_aic = cluster_manager.cluster_compute["worker_nodes"][0][
+            "advanced_instance_config"
+        ]
+        self.assertIn("TagSpecifications", worker_aic)
+
+        # Verify tag values
+        for aic in [top_level_aic, head_aic, worker_aic]:
+            tag_specs = aic["TagSpecifications"]
+            instance_tags = [ts for ts in tag_specs if ts["ResourceType"] == "instance"]
+            self.assertEqual(len(instance_tags), 1)
+            self.assertIn({"Key": "foo", "Value": "bar"}, instance_tags[0]["Tags"])
 
     @patch("time.sleep", lambda *a, **kw: None)
     def testFindCreateClusterEnvExisting(self):
@@ -673,6 +730,122 @@ class MinimalSessionManagerTest(unittest.TestCase):
         self.assertEqual(self.sdk.call_counter["list_cluster_environment_builds"], 1)
         self.assertGreaterEqual(self.sdk.call_counter["get_build"], 9)
         self.assertEqual(len(self.sdk.call_counter), 2)
+
+
+class MinimalSessionManagerNewSchemaTest(unittest.TestCase):
+    """Tests for compute config creation using the anyscale.compute_config API."""
+
+    def setUp(self) -> None:
+        self.sdk = MockSDK()
+        self.sdk.returns["get_project"] = APIDict(
+            result=APIDict(name="release_unit_tests")
+        )
+
+        self.cluster_compute = TEST_CLUSTER_COMPUTE_NEW_SCHEMA
+
+        self.cluster_manager = MinimalClusterManager(
+            project_id=UNIT_TEST_PROJECT_ID,
+            sdk=self.sdk,
+            test=MockTest(
+                {
+                    "name": f"unit_test__{self.__class__.__name__}",
+                    "cluster": {"byod": {}, "anyscale_sdk_2026": True},
+                }
+            ),
+        )
+        self.sdk.reset()
+
+    @patch("time.sleep", lambda *a, **kw: None)
+    def testFindExistingComputeConfig(self):
+        """Find existing compute config via anyscale.compute_config.get."""
+        self.cluster_manager.set_cluster_compute(self.cluster_compute)
+        self.assertTrue(self.cluster_manager.cluster_compute_name)
+        self.assertIsNone(self.cluster_manager.cluster_compute_id)
+
+        mock_anyscale = MagicMock()
+        self.cluster_manager.test.anyscale = mock_anyscale
+        mock_anyscale.compute_config.get.return_value = APIDict(
+            id="existing_id", name="test:1", config=None
+        )
+
+        self.cluster_manager.create_cluster_compute()
+
+        self.assertEqual(self.cluster_manager.cluster_compute_id, "existing_id")
+        mock_anyscale.compute_config.get.assert_called_once_with(
+            self.cluster_manager.cluster_compute_name
+        )
+        mock_anyscale.compute_config.create.assert_not_called()
+
+    @patch("time.sleep", lambda *a, **kw: None)
+    def testCreateComputeConfigSucceed(self):
+        """Compute config not found, create new, and succeed."""
+        self.cluster_manager.set_cluster_compute(self.cluster_compute)
+        self.assertTrue(self.cluster_manager.cluster_compute_name)
+        self.assertIsNone(self.cluster_manager.cluster_compute_id)
+
+        mock_anyscale = MagicMock()
+        self.cluster_manager.test.anyscale = mock_anyscale
+        # get: first call raises (not found), second call returns version
+        mock_anyscale.compute_config.get.side_effect = [
+            Exception("not found"),
+            APIDict(id="new_id", name="test:1", config=None),
+        ]
+        mock_anyscale.compute_config.create.return_value = "test:1"
+
+        self.cluster_manager.create_cluster_compute()
+
+        self.assertEqual(self.cluster_manager.cluster_compute_id, "new_id")
+        mock_anyscale.compute_config.create.assert_called_once()
+        self.assertEqual(mock_anyscale.compute_config.get.call_count, 2)
+
+    @patch("time.sleep", lambda *a, **kw: None)
+    def testCreateComputeConfigCreateFailFail(self):
+        """Compute config not found, create fails both times."""
+        self.cluster_manager.set_cluster_compute(self.cluster_compute)
+        self.assertTrue(self.cluster_manager.cluster_compute_name)
+        self.assertIsNone(self.cluster_manager.cluster_compute_id)
+
+        mock_anyscale = MagicMock()
+        self.cluster_manager.test.anyscale = mock_anyscale
+        # get always raises (not found)
+        mock_anyscale.compute_config.get.side_effect = Exception("not found")
+        # create always fails
+        mock_anyscale.compute_config.create.side_effect = Exception("create failed")
+
+        with self.assertRaises(ClusterComputeCreateError):
+            self.cluster_manager.create_cluster_compute()
+
+        self.assertIsNone(self.cluster_manager.cluster_compute_id)
+        # get called once per attempt (lookup), create called once per attempt
+        self.assertEqual(mock_anyscale.compute_config.get.call_count, 2)
+        self.assertEqual(mock_anyscale.compute_config.create.call_count, 2)
+
+    @patch("time.sleep", lambda *a, **kw: None)
+    def testCreateComputeConfigCreateFailSucceed(self):
+        """Compute config not found, create fails once, succeeds on retry."""
+        self.cluster_manager.set_cluster_compute(self.cluster_compute)
+        self.assertTrue(self.cluster_manager.cluster_compute_name)
+        self.assertIsNone(self.cluster_manager.cluster_compute_id)
+
+        mock_anyscale = MagicMock()
+        self.cluster_manager.test.anyscale = mock_anyscale
+        # get: raises on lookups (attempts 1 and 2), succeeds on post-create fetch
+        mock_anyscale.compute_config.get.side_effect = [
+            Exception("not found"),  # attempt 1: lookup
+            Exception("not found"),  # attempt 2: lookup
+            APIDict(id="new_id", name="test:1", config=None),  # attempt 2: post-create
+        ]
+        # create: fails once, then succeeds
+        mock_anyscale.compute_config.create.side_effect = [
+            Exception("create failed"),
+            "test:1",
+        ]
+
+        self.cluster_manager.create_cluster_compute()
+
+        self.assertEqual(self.cluster_manager.cluster_compute_id, "new_id")
+        self.assertEqual(mock_anyscale.compute_config.get.call_count, 3)
+        self.assertEqual(mock_anyscale.compute_config.create.call_count, 2)
 
 
 if __name__ == "__main__":
